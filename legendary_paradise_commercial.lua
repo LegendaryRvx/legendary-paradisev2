@@ -27,14 +27,34 @@ local LIFETIME_KEYS = {
  ["LP-LIFE-XXXX-0002"] = "",
 }
 
--- Daily keys: {key = expiry_timestamp} — 24h validity
--- In production: generate these via Linkvertise callback + your API
-local DAILY_KEYS = {
- ["LP-DAY-TEST-0001"] = os.time() + 86400,
-}
+-- SECRET SEED for daily key generation (MUST MATCH the HTML page!)
+local SECRET_SEED = "LP_LEGENDARY_2025_PARADISE"
 
--- Linkvertise config (user gets redirected here to get a daily key)
+-- Linkvertise config (change YOUR_ID to your Linkvertise user ID)
 local LINKVERTISE_URL = "https://linkvertise.com/YOUR_ID/legendary-paradise"
+
+-- Logo: Upload logo.png to Roblox (create.roblox.com -> Decals) and put the ID here
+local LOGO_ASSET_ID = "rbxassetid://0" -- REPLACE 0 with your uploaded decal/image asset ID
+
+-- ============================================================
+-- DAILY KEY GENERATOR (algorithmic — matches HTML page)
+-- ============================================================
+local function generateDailyKey()
+ local d = os.date("!*t") -- UTC time
+ local dayCode = d.year * 10000 + d.month * 100 + d.day
+ -- Pass 1
+ local hash = 0
+ for i = 1, #SECRET_SEED do
+  hash = (hash * 31 + string.byte(SECRET_SEED, i) + dayCode) % 999999
+ end
+ -- Pass 2 (reversed seed)
+ local rev = string.reverse(SECRET_SEED)
+ local hash2 = dayCode
+ for i = 1, #rev do
+  hash2 = (hash2 * 17 + string.byte(rev, i) + hash) % 999999
+ end
+ return "LP-" .. string.format("%06d", hash) .. "-" .. string.format("%06d", hash2)
+end
 
 -- ============================================================
 -- HWID DETECTION
@@ -62,7 +82,6 @@ local function validateKey(inputKey)
  if LIFETIME_KEYS[inputKey] ~= nil then
   local storedHWID = LIFETIME_KEYS[inputKey]
   if storedHWID == "" then
-   -- First activation: lock to this HWID
    LIFETIME_KEYS[inputKey] = hwid
    return true, "lifetime", "LIFETIME KEY ACTIVATED (HWID locked)"
   elseif storedHWID == hwid then
@@ -72,25 +91,123 @@ local function validateKey(inputKey)
   end
  end
  
- -- Check daily keys
- if DAILY_KEYS[inputKey] ~= nil then
-  if os.time() <= DAILY_KEYS[inputKey] then
-   return true, "daily", "DAILY KEY VALID ("..math.floor((DAILY_KEYS[inputKey]-os.time())/3600).."h left)"
-  else
-   return false, nil, "KEY EXPIRED"
-  end
+ -- Check daily algorithmic key (matches HTML page)
+ local todayKey = generateDailyKey()
+ if inputKey == todayKey then
+  return true, "daily", "DAILY KEY VALID (expires at midnight UTC)"
+ end
+ 
+ -- Also accept yesterday's key (grace period for timezone differences)
+ local yHash = 0
+ local d = os.date("!*t")
+ local yDay = os.time({year=d.year, month=d.month, day=d.day, hour=0}) - 86400
+ local yd = os.date("!*t", yDay)
+ local yDayCode = yd.year * 10000 + yd.month * 100 + yd.day
+ for i = 1, #SECRET_SEED do
+  yHash = (yHash * 31 + string.byte(SECRET_SEED, i) + yDayCode) % 999999
+ end
+ local rev = string.reverse(SECRET_SEED)
+ local yHash2 = yDayCode
+ for i = 1, #rev do
+  yHash2 = (yHash2 * 17 + string.byte(rev, i) + yHash) % 999999
+ end
+ local yesterdayKey = "LP-" .. string.format("%06d", yHash) .. "-" .. string.format("%06d", yHash2)
+ if inputKey == yesterdayKey then
+  return true, "daily", "DAILY KEY VALID (grace period)"
  end
  
  return false, nil, "INVALID KEY"
 end
 
 -- ============================================================
--- KEY GUI
+-- SERVICES (declared early for key system + main script)
 -- ============================================================
 local Players = game:GetService("Players")
 local RS = game:GetService("ReplicatedStorage")
 local WS = game:GetService("Workspace")
 local LP = Players.LocalPlayer
+
+-- ============================================================
+-- KEY PERSISTENCE (saves key to file so user doesn't re-enter)
+-- Uses executor filesystem: writefile/readfile/isfile
+-- ============================================================
+local KEY_SAVE_FILE = "LP_key_data.txt"
+
+local function saveKeyData(key, ktype, hwid)
+ pcall(function()
+  if not writefile then return end
+  -- For daily keys: expire at next midnight UTC
+  local expiry = 0
+  if ktype == "daily" then
+   local d = os.date("!*t")
+   expiry = os.time({year=d.year, month=d.month, day=d.day, hour=0}) + 86400
+  elseif ktype == "admin" or ktype == "lifetime" then
+   expiry = 9999999999 -- never expires
+  end
+  writefile(KEY_SAVE_FILE, key .. "\n" .. ktype .. "\n" .. hwid .. "\n" .. tostring(expiry))
+ end)
+end
+
+local function loadKeyData()
+ local ok, data = pcall(function()
+  if not isfile or not readfile then return nil end
+  if not isfile(KEY_SAVE_FILE) then return nil end
+  return readfile(KEY_SAVE_FILE)
+ end)
+ if not ok or not data then return nil end
+ local lines = {}
+ for line in data:gmatch("[^\n]+") do table.insert(lines, line) end
+ if #lines < 4 then return nil end
+ return {
+  key = lines[1],
+  ktype = lines[2],
+  hwid = lines[3],
+  expiry = tonumber(lines[4]) or 0
+ }
+end
+
+local function clearKeyData()
+ pcall(function()
+  if writefile then writefile(KEY_SAVE_FILE, "") end
+ end)
+end
+
+-- ============================================================
+-- TRY AUTO-LOGIN FROM SAVED KEY
+-- ============================================================
+local keyValid = false
+local keyType = nil
+
+pcall(function()
+ local saved = loadKeyData()
+ if saved and saved.key and saved.ktype and saved.hwid then
+  local hwid = getHWID()
+  -- Check HWID matches
+  if saved.hwid ~= hwid then
+   clearKeyData()
+   return
+  end
+  -- Check expiry
+  if os.time() > saved.expiry then
+   clearKeyData()
+   return
+  end
+  -- Re-validate the key is still legit
+  local valid, ktype, msg = validateKey(saved.key)
+  if valid then
+   keyValid = true
+   keyType = ktype
+   print("[LP] Auto-login: " .. msg)
+  else
+   clearKeyData()
+  end
+ end
+end)
+
+-- ============================================================
+-- KEY GUI (only shows if auto-login failed)
+-- ============================================================
+if not keyValid then
 
 -- Clean old instances
 pcall(function()
@@ -128,29 +245,38 @@ dimmer.BackgroundTransparency = 0.4
 dimmer.BorderSizePixel = 0
 dimmer.Parent = keySG
 
--- Key card
+-- Key card (taller to fit logo)
 local keyCard = Instance.new("Frame")
-keyCard.Size = UDim2.new(0, 340, 0, 280)
-keyCard.Position = UDim2.new(0.5, -170, 0.5, -140)
+keyCard.Size = UDim2.new(0, 340, 0, 400)
+keyCard.Position = UDim2.new(0.5, -170, 0.5, -200)
 keyCard.BackgroundColor3 = KC.card
 keyCard.BorderSizePixel = 0
 keyCard.Parent = keySG
 pcall(function() Instance.new("UICorner", keyCard).CornerRadius = UDim.new(0, 12) end)
 
--- Title
+-- Logo image
+local logoImg = Instance.new("ImageLabel")
+logoImg.Size = UDim2.new(0, 180, 0, 100)
+logoImg.Position = UDim2.new(0.5, -90, 0, 10)
+logoImg.BackgroundTransparency = 1
+logoImg.Image = LOGO_ASSET_ID
+logoImg.ScaleType = Enum.ScaleType.Fit
+logoImg.Parent = keyCard
+
+-- Title (below logo)
 local keyTitle = Instance.new("TextLabel")
-keyTitle.Size = UDim2.new(1, 0, 0, 36)
-keyTitle.Position = UDim2.new(0, 0, 0, 10)
+keyTitle.Size = UDim2.new(1, 0, 0, 24)
+keyTitle.Position = UDim2.new(0, 0, 0, 112)
 keyTitle.BackgroundTransparency = 1
 keyTitle.Text = "LEGENDARY PARADISE"
 keyTitle.TextColor3 = KC.accent
-keyTitle.TextSize = 16
+keyTitle.TextSize = 14
 keyTitle.Font = Enum.Font.GothamBold
 keyTitle.Parent = keyCard
 
 local keyVer = Instance.new("TextLabel")
 keyVer.Size = UDim2.new(1, 0, 0, 16)
-keyVer.Position = UDim2.new(0, 0, 0, 40)
+keyVer.Position = UDim2.new(0, 0, 0, 134)
 keyVer.BackgroundTransparency = 1
 keyVer.Text = VERSION
 keyVer.TextColor3 = KC.dim
@@ -161,7 +287,7 @@ keyVer.Parent = keyCard
 -- Key input
 local keyInputFrame = Instance.new("Frame")
 keyInputFrame.Size = UDim2.new(1, -40, 0, 34)
-keyInputFrame.Position = UDim2.new(0, 20, 0, 70)
+keyInputFrame.Position = UDim2.new(0, 20, 0, 162)
 keyInputFrame.BackgroundColor3 = KC.input
 keyInputFrame.BorderSizePixel = 0
 keyInputFrame.Parent = keyCard
@@ -183,7 +309,7 @@ keyInput.Parent = keyInputFrame
 -- Status label
 local keyStatus = Instance.new("TextLabel")
 keyStatus.Size = UDim2.new(1, -40, 0, 30)
-keyStatus.Position = UDim2.new(0, 20, 0, 112)
+keyStatus.Position = UDim2.new(0, 20, 0, 202)
 keyStatus.BackgroundTransparency = 1
 keyStatus.Text = ""
 keyStatus.TextColor3 = KC.dim
@@ -195,7 +321,7 @@ keyStatus.Parent = keyCard
 -- HWID display
 local hwidLabel = Instance.new("TextLabel")
 hwidLabel.Size = UDim2.new(1, -40, 0, 14)
-hwidLabel.Position = UDim2.new(0, 20, 0, 140)
+hwidLabel.Position = UDim2.new(0, 20, 0, 230)
 hwidLabel.BackgroundTransparency = 1
 hwidLabel.Text = "HWID: "..string.sub(getHWID(), 1, 24).."..."
 hwidLabel.TextColor3 = Color3.fromRGB(60, 60, 70)
@@ -207,7 +333,7 @@ hwidLabel.Parent = keyCard
 -- Activate button
 local activateBtn = Instance.new("TextButton")
 activateBtn.Size = UDim2.new(1, -40, 0, 36)
-activateBtn.Position = UDim2.new(0, 20, 0, 164)
+activateBtn.Position = UDim2.new(0, 20, 0, 254)
 activateBtn.BackgroundColor3 = KC.accent
 activateBtn.Text = "ACTIVATE"
 activateBtn.TextColor3 = KC.white
@@ -220,7 +346,7 @@ pcall(function() Instance.new("UICorner", activateBtn).CornerRadius = UDim.new(0
 -- Get Key button (Linkvertise)
 local getKeyBtn = Instance.new("TextButton")
 getKeyBtn.Size = UDim2.new(1, -40, 0, 28)
-getKeyBtn.Position = UDim2.new(0, 20, 0, 208)
+getKeyBtn.Position = UDim2.new(0, 20, 0, 298)
 getKeyBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 38)
 getKeyBtn.Text = "GET A KEY (Linkvertise)"
 getKeyBtn.TextColor3 = KC.accent
@@ -250,8 +376,6 @@ creditsLbl.Parent = keyCard
 -- ============================================================
 -- KEY ACTIVATION LOGIC
 -- ============================================================
-local keyValid = false
-local keyType = nil
 
 activateBtn.MouseButton1Click:Connect(function()
  local input = keyInput.Text
@@ -267,6 +391,8 @@ activateBtn.MouseButton1Click:Connect(function()
   keyStatus.TextColor3 = KC.green
   keyValid = true
   keyType = ktype
+  -- Save key to file so user doesn't have to re-enter
+  saveKeyData(input, ktype, getHWID())
   wait(1)
   keySG:Destroy()
  else
@@ -283,6 +409,8 @@ end)
 
 -- Wait for key validation
 while not keyValid do wait(0.5) end
+
+end -- if not keyValid (close the auto-login check block)
 
 -- ============================================================
 -- MAIN SCRIPT STARTS HERE (only runs after key validation)
@@ -494,7 +622,8 @@ local topb = Instance.new("Frame"); topb.Size = UDim2.new(1, 0, 0, 30); topb.Bac
 pcall(function() Instance.new("UICorner", topb).CornerRadius = UDim.new(0, 10) end)
 local tbf = Instance.new("Frame", topb); tbf.Size = UDim2.new(1, 0, 0, 10); tbf.Position = UDim2.new(0, 0, 1, -10); tbf.BackgroundColor3 = C.tb; tbf.BorderSizePixel = 0
 
-local tl = Instance.new("TextLabel"); tl.Size = UDim2.new(1, -70, 1, 0); tl.Position = UDim2.new(0, 10, 0, 0); tl.BackgroundTransparency = 1; tl.Text = "LEGENDARY PARADISE"; tl.TextColor3 = C.ac; tl.TextSize = 12; tl.Font = Enum.Font.GothamBold; tl.TextXAlignment = Enum.TextXAlignment.Left; tl.Parent = topb
+local tl = Instance.new("TextLabel"); tl.Size = UDim2.new(1, -70, 1, 0); tl.Position = UDim2.new(0, 30, 0, 0); tl.BackgroundTransparency = 1; tl.Text = "LEGENDARY PARADISE"; tl.TextColor3 = C.ac; tl.TextSize = 12; tl.Font = Enum.Font.GothamBold; tl.TextXAlignment = Enum.TextXAlignment.Left; tl.Parent = topb
+local topLogo = Instance.new("ImageLabel"); topLogo.Size = UDim2.new(0, 24, 0, 24); topLogo.Position = UDim2.new(0, 4, 0, 3); topLogo.BackgroundTransparency = 1; topLogo.Image = LOGO_ASSET_ID; topLogo.ScaleType = Enum.ScaleType.Fit; topLogo.Parent = topb
 
 -- Key type badge
 local badge = Instance.new("TextLabel"); badge.Size = UDim2.new(0, 60, 0, 14); badge.Position = UDim2.new(0.5, -30, 0.5, -7); badge.BackgroundColor3 = isAdmin and Color3.fromRGB(220, 170, 0) or C.ac; badge.Text = string.upper(tostring(keyType)); badge.TextColor3 = Color3.fromRGB(0, 0, 0); badge.TextSize = 8; badge.Font = Enum.Font.GothamBold; badge.BorderSizePixel = 0; badge.Parent = topb
