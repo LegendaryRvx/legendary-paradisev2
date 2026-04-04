@@ -45,6 +45,7 @@ local SECRET_SEED = "LP_LEGENDARY_2025_PARADISE"
 -- Create 2 separate Linkvertise links, both pointing to your GitHub Pages key URL
 local LINKVERTISE_URL   = "https://linkvertise.com/4707892/T2U7GYvSfKWJ"
 local LINKVERTISE_URL_2 = "https://linkvertise.com/4707892/G73qbiInLKaE"
+local DISCORD_URL       = "https://discord.gg/kfweaPTbTQ"
 
 -- Logo: set to "" to hide, or paste your rbxassetid://XXXX here when ready
 local LOGO_ASSET_ID = "" -- Leave empty until you have the decal ID
@@ -320,7 +321,7 @@ dimmer.Parent = keySG
 
 -- Key card
 local keyCard = Instance.new("Frame")
-keyCard.Size = UDim2.new(0, 340, 0, 300)
+keyCard.Size = UDim2.new(0, 340, 0, 330)
 keyCard.Position = UDim2.new(0.5, -170, 0.5, -150)
 keyCard.BackgroundColor3 = KC.card
 keyCard.BorderSizePixel = 0
@@ -432,6 +433,25 @@ getKeyBtn.MouseButton1Click:Connect(function()
  pcall(function() setclipboard(LINKVERTISE_URL) end)
  keyStatus.Text = "Step 1 link copied! Complete both steps to get your key."
  keyStatus.TextColor3 = KC.accent
+end)
+
+-- Discord button
+local discordBtn = Instance.new("TextButton")
+discordBtn.Size = UDim2.new(1, -40, 0, 26)
+discordBtn.Position = UDim2.new(0, 20, 0, 238)
+discordBtn.BackgroundColor3 = Color3.fromRGB(88, 101, 242)
+discordBtn.Text = "JOIN DISCORD"
+discordBtn.TextColor3 = KC.white
+discordBtn.TextSize = 10
+discordBtn.Font = Enum.Font.GothamBold
+discordBtn.BorderSizePixel = 0
+discordBtn.Parent = keyCard
+pcall(function() Instance.new("UICorner", discordBtn).CornerRadius = UDim.new(0, 6) end)
+
+discordBtn.MouseButton1Click:Connect(function()
+ pcall(function() setclipboard(DISCORD_URL) end)
+ keyStatus.Text = "Discord link copied! discord.gg/kfweaPTbTQ"
+ keyStatus.TextColor3 = Color3.fromRGB(88, 101, 242)
 end)
 
 -- Credits
@@ -1033,6 +1053,7 @@ pcall(function()
  mLbl(pg, "© LegendaryRvx", 8)
  mBtn(pg, "Save Config", C.ac, function() saveConfig(); log("Config saved!") end, 9)
  mBtn(pg, "Destroy GUI", C.rd, function() saveConfig(); sg:Destroy() end, 10)
+ mBtn(pg, "DISCORD  discord.gg/kfweaPTbTQ", Color3.fromRGB(88, 101, 242), function() pcall(function() setclipboard(DISCORD_URL) end); log("Discord link copied!") end, 11)
  -- Admin: show debug log
  if isAdmin then
   mSec(pg, "ADMIN DEBUG", 10)
