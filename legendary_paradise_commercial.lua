@@ -47,6 +47,10 @@ local LINKVERTISE_URL   = "https://linkvertise.com/4707892/T2U7GYvSfKWJ"
 local LINKVERTISE_URL_2 = "https://linkvertise.com/4707892/G73qbiInLKaE"
 local DISCORD_URL       = "https://discord.gg/kfweaPTbTQ"
 
+-- Trial key: 24h free trial, any device, locks to HWID on first use, never reusable after expiry
+local TRIAL_KEY  = "LP-TRIAL-FREE"
+local TRIAL_FILE = "LP_trial_used.txt"
+
 -- Logo: set to "" to hide, or paste your rbxassetid://XXXX here when ready
 local LOGO_ASSET_ID = "" -- Leave empty until you have the decal ID
 
@@ -145,6 +149,22 @@ local function validateKey(inputKey)
   end
  end
 
+ -- Trial key: 24h one-time use per device
+ if inputKey == TRIAL_KEY then
+  local trialExp = loadTrialRecord and loadTrialRecord(hwid)
+  if trialExp then
+   if os.time() > trialExp then
+    return false, nil, "TRIAL EXPIRED on this device. Get a key via Linkvertise!", nil
+   else
+    return true, "trial", "TRIAL KEY VALID", nil
+   end
+  else
+   local newExp = os.time() + 86400
+   if saveTrialRecord then saveTrialRecord(hwid, newExp) end
+   return true, "trial", "TRIAL ACTIVATED — 24h free access!", nil
+  end
+ end
+
  -- Daily key: validate via external IP
  local ip = getExternalIP()
  if not ip then
@@ -196,6 +216,9 @@ local function saveKeyData(key, ktype, hwid, ip, hwid_lock)
    expiry = os.time({year=d.year, month=d.month, day=d.day, hour=0}) + 86400
   elseif ktype == "tester" then
    expiry = (TESTER_KEYS[key] and TESTER_KEYS[key].expiry) or 0
+  elseif ktype == "trial" then
+   local rec = loadTrialRecord and loadTrialRecord(hwid or "")
+   expiry = rec or (os.time() + 86400)
   elseif ktype == "admin" or ktype == "lifetime" then
    expiry = 9999999999
   end
@@ -235,6 +258,36 @@ local function clearKeyData()
  end)
 end
 
+-- Trial record: stores HWID:expiry permanently so trial can't be reused after expiry
+local function loadTrialRecord(hwid)
+ local ok, data = pcall(function()
+  if not isfile or not readfile then return nil end
+  if not isfile(TRIAL_FILE) then return nil end
+  return readfile(TRIAL_FILE)
+ end)
+ if not ok or not data then return nil end
+ for line in data:gmatch("[^\n]+") do
+  local h, e = line:match("^(.+):(%d+)$")
+  if h == hwid then return tonumber(e) end
+ end
+ return nil
+end
+
+local function saveTrialRecord(hwid, expiry)
+ pcall(function()
+  if not writefile then return end
+  local existing = ""
+  pcall(function() if isfile and isfile(TRIAL_FILE) then existing = readfile(TRIAL_FILE) or "" end end)
+  local lines = {}
+  for line in existing:gmatch("[^\n]+") do
+   local h = line:match("^(.+):%d+$")
+   if h ~= hwid then table.insert(lines, line) end
+  end
+  table.insert(lines, hwid .. ":" .. tostring(expiry))
+  writefile(TRIAL_FILE, table.concat(lines, "\n"))
+ end)
+end
+
 -- ============================================================
 -- TRY AUTO-LOGIN FROM SAVED KEY
 -- ============================================================
@@ -271,6 +324,14 @@ pcall(function()
   if TESTER_KEYS[saved.key] == nil then clearKeyData(); return end
   keyValid = true; keyType = "tester"
   print("[LP] Auto-login: tester key valid")
+  return
+ end
+ -- Trial: verify trial record still valid for this HWID
+ if saved.ktype == "trial" then
+  local trialExp = loadTrialRecord(hwid)
+  if not trialExp or os.time() > trialExp then clearKeyData(); return end
+  keyValid = true; keyType = "trial"
+  print("[LP] Auto-login: trial key valid")
   return
  end
  -- Daily: expiry + hwid_lock already checked above
