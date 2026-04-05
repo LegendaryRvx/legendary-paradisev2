@@ -306,11 +306,11 @@ const STEP_VALIDITY = 86400 * 1000; // 24h in ms — steps reset each day
 // ── STATE ──────────────────────────────────────────────────────────────────
 const LS_KEY_S1 = "LP_step1_ts";
 const LS_KEY_S2 = "LP_step2_ts";
-const NOW       = Date.now();
 
 function stepValid(key) {
-  const ts = parseInt(localStorage.getItem(key) || "0");
-  return ts > 0 && ts <= NOW && (NOW - ts) < STEP_VALIDITY;
+  const ts  = parseInt(localStorage.getItem(key) || "0");
+  const now = Date.now();
+  return ts > 0 && ts <= now && (now - ts) < STEP_VALIDITY;
 }
 
 function markStep(key) {
